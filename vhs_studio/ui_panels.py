@@ -157,9 +157,14 @@ class RecordPanel(ttk.LabelFrame):
                         command=app.on_change).grid(row=7, column=0, columnspan=3,
                                                     sticky="w")
 
+        # предупреждение: кодек не умеет чересстрочность, а обработка выключена
+        self.lbl_warn = ttk.Label(self, text="", foreground="#b00020",
+                                  wraplength=300, justify="left")
+        self.lbl_warn.grid(row=9, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
         self.lbl_estimate = ttk.Label(self, text="", foreground="#1a5fb4")
-        self.lbl_estimate.grid(row=8, column=0, columnspan=3, sticky="w",
-                               pady=(6, 0))
+        self.lbl_estimate.grid(row=10, column=0, columnspan=3, sticky="w",
+                               pady=(4, 0))
 
     def collect(self, out):
         meta = CODECS[self.cb_codec.get()]

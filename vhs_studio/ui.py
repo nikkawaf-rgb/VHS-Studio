@@ -272,9 +272,10 @@ class App(tk.Tk):
         self.rec.lbl_codec_info.configure(text=CODEC_INFO.get(s["codec"], ""))
         self.filt.lbl_deint_info.configure(text=DEINT_INFO.get(s.get("f_deint", ""), ""))
         self.update_estimate(s)
+        self.update_warning(s)
         for key in ("f_denoise", "f_chroma_dn", "f_sharpen", "f_bright",
                     "f_contrast", "f_saturation", "f_band", "f_side"):
-            lbl = getattr(self, "lbl_" + key, None)
+            lbl = getattr(self.filt, "lbl_" + key, None)
             if lbl:
                 fmt = "%.1f" if key == "f_sharpen" else (
                     "%.2f" if key in ("f_bright", "f_contrast", "f_saturation") else "%.0f")
@@ -288,6 +289,22 @@ class App(tk.Tk):
                 except Exception:  # noqa: BLE001
                     pass
             self._restart_job = self.after(450, self.restart_preview)
+
+    def update_warning(self, s):
+        """NVENC не умеет чересстрочность: без деинтерлейса картинка «рвётся»."""
+        nvenc = s["codec"] in ("hevc_nvenc", "h264_nvenc")
+        has_deint = bool(s.get("f_deint"))
+        if not nvenc:
+            msg = ""
+        elif not s.get("f_bake"):
+            msg = "⚠ Видеокарта чересстрочность не сохраняет. Включите «Применять " \
+                  "обработку при записи», иначе на движении будет «гребёнка»."
+        elif not has_deint:
+            msg = "⚠ Выбрано «нет» в деинтерлейсе — с этим кодеком получится " \
+                  "гребёнка. Поставьте bwdif."
+        else:
+            msg = ""
+        self.rec.lbl_warn.configure(text=msg)
 
     def on_std(self):
         self.on_change()
