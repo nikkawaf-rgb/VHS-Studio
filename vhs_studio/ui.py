@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import queue
 import re
@@ -14,28 +15,15 @@ from tkinter import ttk, filedialog, messagebox
 
 from PIL import Image, ImageTk
 
-from . import config as cfg
 from .capture import AudioMonitor, Preview, Recorder
-from .commands import (audio_args, build_filters, codec_args, dshow_args,
-                       output_ext, preview_size)
-from .config import (AUDIO_CODECS, CODECS, CODEC_INFO, CRF_RANGE, DEINT_INFO,
-                     DEFAULTS, INPUT_LABELS, INPUT_PINS, LOG_FILE, PIN_AUTO,
-                     PIN_COMPOSITE, PIN_SVIDEO, PROFILE_DIR, RECOMMENDED,
-                     SETTINGS_FILE, s_fps)
+from .commands import build_filters, dshow_args, output_ext
+from .config import (CODECS, CODEC_INFO, CRF_RANGE, DEINT_INFO, DEFAULTS,
+                     INPUT_PINS, LOG_FILE, PIN_AUTO, PIN_COMPOSITE, PROFILE_DIR,
+                     RECOMMENDED, SETTINGS_FILE, s_fps)
 from .device import FFMPEG, list_dshow_devices, probe_inputs, run_quiet
-from .estimates import estimate_gb_per_hour, estimate_mbps, fmt_gb, hms, human_size
-
-def human_size(n):
-    for unit in ("Б", "КБ", "МБ", "ГБ"):
-        if n < 1024:
-            return "%.1f %s" % (n, unit)
-        n /= 1024.0
-    return "%.1f ТБ" % n
-
-
-def hms(sec):
-    sec = int(sec)
-    return "%02d:%02d:%02d" % (sec // 3600, (sec % 3600) // 60, sec % 60)
+from .estimates import (estimate_gb_per_hour, estimate_mbps, fmt_gb, hms,
+                        human_size)
+from .ui_panels import DevicePanel, FilterPanel, PreviewPane, RecordPanel
 
 
 class App(tk.Tk):
@@ -86,204 +74,23 @@ class App(tk.Tk):
 
         main = ttk.Frame(self, padding=8)
         main.pack(fill="both", expand=True)
+
         left = ttk.Frame(main)
         left.pack(side="left", fill="y")
         right = ttk.Frame(main)
         right.pack(side="right", fill="both", expand=True, padx=(10, 0))
 
-        # --- Устройство ---
-        dev = ttk.LabelFrame(left, text="Устройство", padding=6)
-        dev.pack(fill="x", pady=(0, 6))
-        ttk.Label(dev, text="Видео:").grid(row=0, column=0, sticky="w")
-        self.cb_video = ttk.Combobox(dev, width=30, state="readonly")
-        self.cb_video.grid(row=0, column=1, sticky="we", pady=1)
-        self.cb_video.bind("<<ComboboxSelected>>", lambda e: self.on_video_dev())
-        ttk.Label(dev, text="Аудио:").grid(row=1, column=0, sticky="w")
-        self.cb_audio = ttk.Combobox(dev, width=30, state="readonly")
-        self.cb_audio.grid(row=1, column=1, sticky="we", pady=1)
-        self.var_audio_on = tk.BooleanVar(value=bool(self.s.get("monitor", True)))
-        ttk.Button(dev, text="Обновить", command=self.refresh_devices).grid(
-            row=3, column=1, sticky="e", pady=(2, 0))
+        self.dev = DevicePanel(left, self)
+        self.dev.pack(fill="x", pady=(0, 6))
 
-        # --- Источник ---
-        src = ttk.LabelFrame(left, text="Источник сигнала", padding=6)
-        src.pack(fill="x", pady=(0, 6))
-        ttk.Label(src, text="Вход:").grid(row=0, column=0, sticky="w")
-        self.cb_input = ttk.Combobox(src, width=16, state="readonly",
-                                     values=INPUT_LABELS)
-        self.cb_input.current(self._pin_to_index(self.s["input_pin"]))
-        self.cb_input.grid(row=0, column=1, sticky="we", pady=1)
-        self.cb_input.bind("<<ComboboxSelected>>", lambda e: self.on_change())
-        ttk.Button(src, text="Определить", width=11,
-                   command=self.detect_input).grid(row=0, column=2, sticky="w")
-        ttk.Label(src, text="Стандарт:").grid(row=1, column=0, sticky="w")
-        self.cb_std = ttk.Combobox(src, width=16, state="readonly",
-                                   values=["PAL", "SECAM", "NTSC"])
-        self.cb_std.set(self.s["standard"])
-        self.cb_std.grid(row=1, column=1, sticky="we", pady=1)
-        self.cb_std.bind("<<ComboboxSelected>>", lambda e: self.on_std())
-        self.btn_reinit = ttk.Button(src, text="⟳ Перезапустить", command=self.reinit_signal)
-        self.btn_reinit.grid(row=2, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.rec = RecordPanel(left, self)
+        self.rec.pack(fill="x", pady=(0, 6))
 
-        # --- Кодек ---
-        enc = ttk.LabelFrame(left, text="Запись", padding=6)
-        enc.pack(fill="x", pady=(0, 6))
-        ttk.Label(enc, text="Кодек:").grid(row=0, column=0, sticky="w")
-        self.cb_codec = ttk.Combobox(enc, width=30, state="readonly",
-                                     values=list(CODECS.keys()))
-        for _label, _meta in CODECS.items():
-            if _meta["id"] == self.s["codec"]:
-                self.cb_codec.set(_label)
-                break
-        else:
-            self.cb_codec.current(1)
-        self.cb_codec.grid(row=0, column=1, columnspan=2, sticky="we", pady=1)
-        self.cb_codec.bind("<<ComboboxSelected>>", lambda e: self.on_codec())
-        self.lbl_codec_info = ttk.Label(enc, text="", wraplength=300,
-                                        foreground="#444444", justify="left")
-        self.lbl_codec_info.grid(row=1, column=0, columnspan=3, sticky="w",
-                                 pady=(0, 3))
+        self.filt = FilterPanel(left, self)
+        self.filt.pack(fill="x")
 
-        ttk.Label(enc, text="Качество:").grid(row=2, column=0, sticky="w")
-        self.var_crf = tk.IntVar(value=self.s["crf"])
-        self.sc_crf = ttk.Scale(enc, from_=10, to=28, orient="horizontal",
-                                variable=self.var_crf, command=lambda v: self.on_change())
-        self.sc_crf.grid(row=2, column=1, sticky="we", pady=1)
-        self.lbl_crf = ttk.Label(enc, text="CRF 16", width=8)
-        self.lbl_crf.grid(row=2, column=2, sticky="w")
-
-        ttk.Label(enc, text="Звук:").grid(row=3, column=0, sticky="w")
-        self.cb_acodec = ttk.Combobox(enc, width=22, state="readonly",
-                                      values=list(AUDIO_CODECS.keys()))
-        if self.s["audio_codec"] in AUDIO_CODECS:
-            self.cb_acodec.set(self.s["audio_codec"])
-        else:
-            self.cb_acodec.current(0)
-        self.cb_acodec.grid(row=3, column=1, columnspan=2, sticky="we", pady=1)
-        self.cb_acodec.bind("<<ComboboxSelected>>", lambda e: self.on_change())
-
-        ttk.Label(enc, text="Папка:").grid(row=4, column=0, sticky="w")
-        self.var_out = tk.StringVar(value=self.s["out_dir"])
-        e = ttk.Entry(enc, textvariable=self.var_out, width=22)
-        e.grid(row=4, column=1, sticky="we", pady=1)
-        e.bind("<FocusOut>", lambda ev: self.on_change())
-        ttk.Button(enc, text="…", width=3, command=self.pick_dir).grid(row=4, column=2)
-
-        ttk.Label(enc, text="Имя:").grid(row=5, column=0, sticky="w")
-        f2 = ttk.Frame(enc)
-        f2.grid(row=5, column=1, columnspan=2, sticky="we")
-        self.var_tape = tk.StringVar(value=self.s["tape_name"])
-        e2 = ttk.Entry(f2, textvariable=self.var_tape, width=14)
-        e2.pack(side="left", fill="x", expand=True)
-        e2.bind("<KeyRelease>", lambda ev: self.on_change())
-
-        self.var_bake = tk.BooleanVar(value=self.s["f_bake"])
-        ttk.Checkbutton(enc, text="Применять обработку при записи\n(иначе — только в предпросмотре)",
-                        variable=self.var_bake, command=self.on_change).grid(
-            row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        self.var_rprev = tk.BooleanVar(value=self.s["record_preview"])
-        ttk.Checkbutton(enc, text="Показывать картинку во время записи",
-                        variable=self.var_rprev, command=self.on_change).grid(
-            row=7, column=0, columnspan=3, sticky="w")
-
-        self.lbl_estimate = ttk.Label(enc, text="", foreground="#1a5fb4")
-        self.lbl_estimate.grid(row=8, column=0, columnspan=3, sticky="w", pady=(6, 0))
-
-        # --- Обработка ---
-        proc = ttk.LabelFrame(left, text="Обработка (видно в предпросмотре)", padding=6)
-        proc.pack(fill="x")
-        r = 0
-        ttk.Label(proc, text="Деинтерлейс:").grid(row=r, column=0, sticky="w")
-        self.cb_deint = ttk.Combobox(proc, width=18, state="readonly",
-                                     values=["bwdif", "yadif", "estdif", "nnedi", "w3fdif", "нет"])
-        self.cb_deint.set(self.s["f_deint"])
-        self.cb_deint.grid(row=r, column=1, sticky="we", pady=1)
-        self.cb_deint.bind("<<ComboboxSelected>>", lambda e: self.on_change())
-        self.lbl_deint_info = ttk.Label(proc, text="", wraplength=300,
-                                        foreground="#444444", justify="left")
-        self.lbl_deint_info.grid(row=1, column=0, columnspan=3, sticky="w",
-                                 pady=(0, 3))
-        r = 1
-
-        def slider(row, label, lo, hi, key, fmt="%.0f"):
-            ttk.Label(proc, text=label).grid(row=row, column=0, sticky="w")
-            var = tk.DoubleVar(value=float(self.s[key]))
-            sc = ttk.Scale(proc, from_=lo, to=hi, orient="horizontal", variable=var,
-                           command=lambda v: self.on_change())
-            sc.grid(row=row, column=1, sticky="we", pady=1)
-            lbl = ttk.Label(proc, text=fmt % float(self.s[key]), width=6)
-            lbl.grid(row=row, column=2, sticky="w")
-            setattr(self, "var_" + key, var)
-            setattr(self, "lbl_" + key, lbl)
-            return var
-
-        slider(r + 1, "Шум (яркость)", 0, 20, "f_denoise")
-        slider(r + 2, "Шум (цвет)", 0, 25, "f_chroma_dn")
-        slider(r + 3, "Резкость", 0, 3, "f_sharpen", "%.1f")
-        slider(r + 4, "Яркость", -0.3, 0.3, "f_bright", "%.2f")
-        slider(r + 5, "Контраст", 0.6, 1.6, "f_contrast", "%.2f")
-        slider(r + 6, "Насыщенность", 0.5, 1.8, "f_saturation", "%.2f")
-        slider(r + 7, "Обрезка низа, px", 0, 40, "f_band")
-        slider(r + 8, "Обрезка боков, px", 0, 20, "f_side")
-
-        ttk.Label(proc, text="Масштаб:").grid(row=r + 9, column=0, sticky="w")
-        self.cb_scale = ttk.Combobox(proc, width=18, state="readonly",
-                                     values=["none", "960x720", "1440x1080"])
-        self.cb_scale.set(self.s["f_scale"])
-        self.cb_scale.grid(row=r + 9, column=1, sticky="we", pady=1)
-        self.cb_scale.bind("<<ComboboxSelected>>", lambda e: self.on_change())
-
-        ttk.Label(proc, text="Звук, дБ:").grid(row=r + 10, column=0, sticky="w")
-        self.var_audio_gain = tk.DoubleVar(value=float(self.s.get("audio_gain", 0)))
-        self.sc_gain = ttk.Scale(proc, from_=-12, to=12, orient="horizontal",
-                                 variable=self.var_audio_gain,
-                                 command=lambda v: self.on_change())
-        self.sc_gain.grid(row=r + 10, column=1, sticky="we", pady=1)
-        self.lbl_audio_gain = ttk.Label(proc, text="%+.1f" % float(self.s.get("audio_gain", 0)),
-                                        width=6)
-        self.lbl_audio_gain.grid(row=r + 10, column=2, sticky="w")
-
-        # --- правая часть ---
-        self.lbl_video = tk.Label(right, bg="#101010", text="Предпросмотр выключен",
-                                  fg="#808080", width=64, height=24)
-        self.lbl_video.pack(fill="both", expand=True)
-        self.lbl_video.bind("<Configure>", self._on_video_resize)
-
-        meter = ttk.Frame(right)
-        meter.pack(fill="x", pady=6)
-        ttk.Label(meter, text="Уровень звука:").pack(side="left")
-        self.canvas_meter = tk.Canvas(meter, height=14, bg="#202020",
-                                      highlightthickness=0)
-        self.canvas_meter.pack(side="left", fill="x", expand=True, padx=6)
-        self.bar = self.canvas_meter.create_rectangle(0, 0, 0, 14, fill="#3ecf3e")
-
-        btns = ttk.Frame(right)
-        btns.pack(fill="x")
-        self.btn_prev = ttk.Button(btns, text="▶  Предпросмотр", command=self.toggle_preview)
-        self.btn_prev.pack(side="left")
-        self.btn_rec = ttk.Button(btns, text="●  Запись", command=self.toggle_record,
-                                  state="disabled")
-        self.btn_rec.pack(side="left", padx=6)
-        self.chk_sound = ttk.Checkbutton(btns, text="🔊 Колонки", variable=self.var_audio_on,
-                                         command=self.on_sound_toggle)
-        self.chk_sound.pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="Снимок PNG", command=self.snapshot).pack(side="left")
-        ttk.Button(btns, text="⟳ Сигнал", command=self.reinit_signal).pack(side="left", padx=6)
-
-        btns2 = ttk.Frame(right)
-        btns2.pack(fill="x", pady=(4, 0))
-        ttk.Button(btns2, text="⭐ Рекомендуемые настройки",
-                   command=self.apply_recommended).pack(side="left")
-        ttk.Button(btns2, text="Проверка сигнала", command=self.diagnose).pack(side="left", padx=6)
-        ttk.Button(btns2, text="Открыть папку", command=self.open_folder).pack(side="left", padx=6)
-        ttk.Button(btns2, text="Загрузить профиль", command=self.load_profile).pack(side="right")
-        ttk.Button(btns2, text="Сохранить профиль", command=self.save_profile).pack(side="right", padx=6)
-
-        self.lbl_status = ttk.Label(right, text="Готово", anchor="w",
-                                    relief="sunken", padding=3)
-        self.lbl_status.pack(fill="x", pady=(6, 0))
-        self.lbl_stats = ttk.Label(right, text="", anchor="w")
-        self.lbl_stats.pack(fill="x")
+        self.pane = PreviewPane(right, self)
+        self.pane.pack(fill="both", expand=True)
 
     # ---------------- настройки ----------------
     def load_settings(self):
@@ -320,7 +127,7 @@ class App(tk.Tk):
                 fmt_gb(free / 1024.0 ** 3), hours)
         except Exception:  # noqa: BLE001
             pass
-        self.lbl_estimate.configure(text=line1 + ("\n" + line2 if line2 else ""))
+        self.rec.lbl_estimate.configure(text=line1 + ("\n" + line2 if line2 else ""))
 
     def apply_recommended(self):
         s = dict(self.s)
@@ -330,7 +137,7 @@ class App(tk.Tk):
 
     def on_sound_toggle(self):
         """Колонки вкл/выкл. Запись в файл при этом не меняется — звук пишется всегда."""
-        on = bool(self.var_audio_on.get())
+        on = bool(self.dev.var_audio_on.get())
         self.s["monitor"] = on
         if on:
             self.monitor.set_enabled(True)
@@ -420,7 +227,7 @@ class App(tk.Tk):
             self.set_status("Сигнал не найден")
             return
         self.s["input_pin"] = best
-        self.cb_input.current(self._pin_to_index(best))
+        self.dev.cb_input.current(self._pin_to_index(best))
         self.on_change()
         name = "композит (тюльпаны)" if best == PIN_COMPOSITE else "S-Video"
         messagebox.showinfo("Определить вход", "Выбран вход: %s\n\n%s" % (name, detail))
@@ -429,41 +236,41 @@ class App(tk.Tk):
     def collect(self):
         s = dict(self.s)
         s["audio_enabled"] = bool(s.get("audio_device"))   # в файл звук пишем всегда
-        s["monitor"] = bool(self.var_audio_on.get())
-        s["video_device"] = self.cb_video.get() or self.s["video_device"]
-        s["audio_device"] = self.cb_audio.get() or self.s["audio_device"]
-        s["input_pin"] = INPUT_PINS[max(0, self.cb_input.current())]
-        s["standard"] = self.cb_std.get()
+        s["monitor"] = bool(self.dev.var_audio_on.get())
+        s["video_device"] = self.dev.cb_video.get() or self.s["video_device"]
+        s["audio_device"] = self.dev.cb_audio.get() or self.s["audio_device"]
+        s["input_pin"] = INPUT_PINS[max(0, self.dev.cb_input.current())]
+        s["standard"] = self.dev.cb_std.get()
         if s["standard"] == "NTSC":
             s["width"], s["height"], s["fps"] = 720, 480, 29.97
         else:
             # PAL и SECAM: у этого чипа они идут с одинаковой развёрткой 625/50
             s["width"], s["height"], s["fps"] = 720, 576, 25
-        meta = CODECS[self.cb_codec.get()]
+        meta = CODECS[self.rec.cb_codec.get()]
         s["codec"] = meta["id"]
-        s["crf"] = int(self.var_crf.get())
-        s["audio_codec"] = self.cb_acodec.get()
-        s["out_dir"] = self.var_out.get()
-        s["tape_name"] = self.var_tape.get() or "кассета"
-        s["f_bake"] = bool(self.var_bake.get())
-        s["record_preview"] = bool(self.var_rprev.get())
-        s["f_deint"] = "" if self.cb_deint.get() == "нет" else self.cb_deint.get()
+        s["crf"] = int(self.rec.var_crf.get())
+        s["audio_codec"] = self.rec.cb_acodec.get()
+        s["out_dir"] = self.rec.var_out.get()
+        s["tape_name"] = self.rec.var_tape.get() or "кассета"
+        s["f_bake"] = bool(self.rec.var_bake.get())
+        s["record_preview"] = bool(self.rec.var_rprev.get())
+        s["f_deint"] = "" if self.filt.cb_deint.get() == "нет" else self.filt.cb_deint.get()
         for key in ("f_denoise", "f_chroma_dn", "f_sharpen", "f_bright",
                     "f_contrast", "f_saturation", "f_band", "f_side"):
-            s[key] = float(getattr(self, "var_" + key).get())
-        s["f_scale"] = self.cb_scale.get()
-        s["audio_gain"] = float(self.var_audio_gain.get())
+            s[key] = float(getattr(self.filt, "var_" + key).get())
+        s["f_scale"] = self.filt.cb_scale.get()
+        s["audio_gain"] = float(self.filt.var_audio_gain.get())
         return s
 
     def on_change(self):
         s = self.collect()
         self.s = s
         lo, hi, _ = CRF_RANGE.get(s["codec"], (10, 28, 16))
-        self.sc_crf.configure(from_=lo, to=hi)
-        self.lbl_crf.configure(text="CRF %d" % s["crf"])
-        self.lbl_audio_gain.configure(text="%+.1f" % s["audio_gain"])
-        self.lbl_codec_info.configure(text=CODEC_INFO.get(s["codec"], ""))
-        self.lbl_deint_info.configure(text=DEINT_INFO.get(s.get("f_deint", ""), ""))
+        self.rec.sc_crf.configure(from_=lo, to=hi)
+        self.rec.lbl_crf.configure(text="CRF %d" % s["crf"])
+        self.filt.lbl_audio_gain.configure(text="%+.1f" % s["audio_gain"])
+        self.rec.lbl_codec_info.configure(text=CODEC_INFO.get(s["codec"], ""))
+        self.filt.lbl_deint_info.configure(text=DEINT_INFO.get(s.get("f_deint", ""), ""))
         self.update_estimate(s)
         for key in ("f_denoise", "f_chroma_dn", "f_sharpen", "f_bright",
                     "f_contrast", "f_saturation", "f_band", "f_side"):
@@ -486,22 +293,22 @@ class App(tk.Tk):
         self.on_change()
 
     def on_codec(self):
-        cid = CODECS[self.cb_codec.get()]["id"]
+        cid = CODECS[self.rec.cb_codec.get()]["id"]
         lo, hi, dflt = CRF_RANGE.get(cid, (10, 28, 16))
-        self.var_crf.set(dflt)
+        self.rec.var_crf.set(dflt)
         self.on_change()
 
     def on_video_dev(self):
         self.on_change()
 
     def pick_dir(self):
-        d = filedialog.askdirectory(initialdir=self.var_out.get() or ".")
+        d = filedialog.askdirectory(initialdir=self.rec.var_out.get() or ".")
         if d:
-            self.var_out.set(d)
+            self.rec.var_out.set(d)
             self.on_change()
 
     def open_folder(self):
-        d = self.var_out.get()
+        d = self.rec.var_out.get()
         os.makedirs(d, exist_ok=True)
         os.startfile(d)
 
@@ -513,14 +320,14 @@ class App(tk.Tk):
                                  "или добавьте его в PATH.")
             return
         v, a = list_dshow_devices()
-        self.cb_video["values"] = v
-        self.cb_audio["values"] = a
+        self.dev.cb_video["values"] = v
+        self.dev.cb_audio["values"] = a
         if v:
             pref = next((x for x in v if "Polaris" in x), v[0])
-            self.cb_video.set(self.s["video_device"] if self.s["video_device"] in v else pref)
+            self.dev.cb_video.set(self.s["video_device"] if self.s["video_device"] in v else pref)
         if a:
             pref = next((x for x in a if "Polaris" in x), a[0])
-            self.cb_audio.set(self.s["audio_device"] if self.s["audio_device"] in a else pref)
+            self.dev.cb_audio.set(self.s["audio_device"] if self.s["audio_device"] in a else pref)
         self.on_change()
 
     # ---------------- предпросмотр ----------------
@@ -533,8 +340,8 @@ class App(tk.Tk):
     def _preview_target_width(self):
         """Ширина предпросмотра под текущий размер окна (не больше 1280)."""
         try:
-            bw = self.lbl_video.winfo_width()
-            bh = self.lbl_video.winfo_height()
+            bw = self.pane.lbl_video.winfo_width()
+            bh = self.pane.lbl_video.winfo_height()
         except Exception:  # noqa: BLE001
             bw, bh = 640, 480
         if bw < 200 or bh < 150:            # окно ещё не отрисовано
@@ -571,9 +378,9 @@ class App(tk.Tk):
                                self.on_preview_error,
                                on_audio=self.monitor.feed)
         if self.preview.start():
-            self.monitor.set_enabled(bool(self.var_audio_on.get()))
-            self.btn_prev.configure(text="■  Стоп предпросмотра")
-            self.btn_rec.configure(state="normal")
+            self.monitor.set_enabled(bool(self.dev.var_audio_on.get()))
+            self.pane.btn_prev.configure(text="■  Стоп предпросмотра")
+            self.pane.btn_rec.configure(state="normal")
             self.set_status("Предпросмотр: %dx%d, %s" % (s["width"], s["height"], s["standard"]))
         else:
             self.preview = None
@@ -586,9 +393,9 @@ class App(tk.Tk):
             self.preview.stop()
             self.preview = None
         self.monitor.set_enabled(False)
-        self.btn_prev.configure(text="▶  Предпросмотр")
-        self.btn_rec.configure(state="disabled")
-        self.lbl_video.configure(image="", text="Нет сигнала")
+        self.pane.btn_prev.configure(text="▶  Предпросмотр")
+        self.pane.btn_rec.configure(state="disabled")
+        self.pane.lbl_video.configure(image="", text="Нет сигнала")
         self.photo = None
         self.set_status(msg)
 
@@ -598,9 +405,9 @@ class App(tk.Tk):
             self.preview = None
             if not self.recorder:
                 self.monitor.set_enabled(False)
-        self.btn_prev.configure(text="▶  Предпросмотр")
-        self.btn_rec.configure(state="disabled")
-        self.lbl_video.configure(image="", text="Предпросмотр выключен")
+        self.pane.btn_prev.configure(text="▶  Предпросмотр")
+        self.pane.btn_rec.configure(state="disabled")
+        self.pane.lbl_video.configure(image="", text="Предпросмотр выключен")
         self.photo = None
         self.set_status("Предпросмотр остановлен")
 
@@ -652,9 +459,9 @@ class App(tk.Tk):
                                  lambda ok, info: self.on_rec_done(ok, info, path),
                                  self.push_level, self.monitor.feed)
         if self.recorder.start():
-            self.monitor.set_enabled(bool(self.var_audio_on.get()))
-            self.btn_rec.configure(text="■  Стоп записи", state="normal")
-            self.btn_prev.configure(state="disabled")
+            self.monitor.set_enabled(bool(self.dev.var_audio_on.get()))
+            self.pane.btn_rec.configure(text="■  Стоп записи", state="normal")
+            self.pane.btn_prev.configure(state="disabled")
             self.rec_start = time.time()
             self.set_status("Запись: " + path)
 
@@ -663,7 +470,7 @@ class App(tk.Tk):
         rec = self.recorder
         if not rec:
             return
-        self.btn_rec.configure(state="disabled", text="■  Останавливаю…")
+        self.pane.btn_rec.configure(state="disabled", text="■  Останавливаю…")
         self.set_status("Останавливаю запись, дописываю файл…")
         threading.Thread(target=rec.stop, daemon=True).start()
 
@@ -677,8 +484,8 @@ class App(tk.Tk):
 
     def _finish_record(self, ok, info, path):
         self.recorder = None
-        self.btn_rec.configure(text="●  Запись", state="normal")
-        self.btn_prev.configure(state="normal")
+        self.pane.btn_rec.configure(text="●  Запись", state="normal")
+        self.pane.btn_prev.configure(state="normal")
         self.level = -70.0
         if isinstance(info, tuple):
             elapsed, size, rc = info
@@ -701,7 +508,7 @@ class App(tk.Tk):
         s = self.collect()
         if int(s.get("input_pin", PIN_AUTO)) == PIN_AUTO:
             s = self.resolve_pin(s)
-        d = self.var_out.get()
+        d = self.rec.var_out.get()
         os.makedirs(d, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         path = os.path.join(d, "snap_%s.png" % stamp)
@@ -790,7 +597,7 @@ class App(tk.Tk):
     # ---------------- профили ----------------
     def save_profile(self):
         s = self.collect()
-        name = self.var_tape.get() or "профиль"
+        name = self.rec.var_tape.get() or "профиль"
         p = filedialog.asksaveasfilename(
             initialdir=PROFILE_DIR, defaultextension=".json",
             initialfile=re.sub(r'[\\/:*?"<>|]', "_", name) + ".json",
@@ -815,30 +622,30 @@ class App(tk.Tk):
         for k, v in s.items():
             if k in self.s:
                 self.s[k] = v
-        self.var_audio_on.set(bool(self.s.get("monitor", True)))
-        self.cb_input.current(self._pin_to_index(self.s["input_pin"]))
-        self.cb_std.set(self.s["standard"])
+        self.dev.var_audio_on.set(bool(self.s.get("monitor", True)))
+        self.dev.cb_input.current(self._pin_to_index(self.s["input_pin"]))
+        self.dev.cb_std.set(self.s["standard"])
         cid = self.s["codec"]
         for label, meta in CODECS.items():
             if meta["id"] == cid:
-                self.cb_codec.set(label)
-        self.var_crf.set(self.s["crf"])
-        self.cb_acodec.set(self.s["audio_codec"])
-        self.var_out.set(self.s["out_dir"])
-        self.var_tape.set(self.s["tape_name"])
-        self.var_bake.set(self.s["f_bake"])
-        self.var_rprev.set(self.s["record_preview"])
-        self.cb_deint.set(self.s["f_deint"] or "нет")
+                self.rec.cb_codec.set(label)
+        self.rec.var_crf.set(self.s["crf"])
+        self.rec.cb_acodec.set(self.s["audio_codec"])
+        self.rec.var_out.set(self.s["out_dir"])
+        self.rec.var_tape.set(self.s["tape_name"])
+        self.rec.var_bake.set(self.s["f_bake"])
+        self.rec.var_rprev.set(self.s["record_preview"])
+        self.filt.cb_deint.set(self.s["f_deint"] or "нет")
         for key in ("f_denoise", "f_chroma_dn", "f_sharpen", "f_bright",
                     "f_contrast", "f_saturation", "f_band", "f_side"):
-            getattr(self, "var_" + key).set(float(self.s[key]))
-        self.cb_scale.set(self.s["f_scale"])
-        self.var_audio_gain.set(float(self.s.get("audio_gain", 0)))
+            getattr(self.filt, "var_" + key).set(float(self.s[key]))
+        self.filt.cb_scale.set(self.s["f_scale"])
+        self.filt.var_audio_gain.set(float(self.s.get("audio_gain", 0)))
         self.on_change()
 
     # ---------------- цикл ----------------
     def set_status(self, text):
-        self.lbl_status.configure(text=text)
+        self.pane.lbl_status.configure(text=text)
 
     def _tick(self):
         if not self.winfo_exists():
@@ -850,7 +657,7 @@ class App(tk.Tk):
             except queue.Empty:
                 break
             if kind == "stats":
-                self.lbl_stats.configure(text=payload)
+                self.pane.lbl_stats.configure(text=payload)
             elif kind == "done":
                 self._finish_record(*payload)
             elif kind == "preview_gone":
@@ -865,18 +672,18 @@ class App(tk.Tk):
             sample = data[::811]
             self._last_spread = max(sample) - min(sample) if sample else 0
             self.photo = ImageTk.PhotoImage(img)
-            self.lbl_video.configure(image=self.photo, text="")
+            self.pane.lbl_video.configure(image=self.photo, text="")
         except queue.Empty:
             pass
-        cw = max(1, self.canvas_meter.winfo_width())
+        cw = max(1, self.pane.canvas_meter.winfo_width())
         # шкала -60…0 дБ
         v = max(0.0, min(1.0, (self.level + 60.0) / 60.0))
         p = max(0.0, min(1.0, (self.peak + 60.0) / 60.0))
         col = "#3ecf3e" if self.peak < -12 else ("#e8c33e" if self.peak < -3 else "#e34b4b")
         if self.level <= -59:
             col = "#3a3a3a"
-        self.canvas_meter.coords(self.bar, 0, 0, int(cw * v), 14)
-        self.canvas_meter.itemconfigure(self.bar, fill=col)
+        self.pane.canvas_meter.coords(self.pane.bar, 0, 0, int(cw * v), 14)
+        self.pane.canvas_meter.itemconfigure(self.pane.bar, fill=col)
         now_t = time.time()
         if now_t - self._fps_t0 >= 1.0:
             dt = now_t - self._fps_t0
@@ -899,22 +706,22 @@ class App(tk.Tk):
             return                      # во время записи тут счётчик, не трогаем
         if not self.preview:
             self.audio_silent_since = None
-            self.lbl_stats.configure(text="")
+            self.pane.lbl_stats.configure(text="")
             return
         now = time.time()
         if getattr(self, "audio_loud", True):
             self.audio_silent_since = None
-            self.lbl_stats.configure(text="предпросмотр: %.0f кадр/с" %
+            self.pane.lbl_stats.configure(text="предпросмотр: %.0f кадр/с" %
                                      getattr(self, "_fps", 0))
             return
         if self.audio_silent_since is None:
             self.audio_silent_since = now
         if now - self.audio_silent_since > 4.0:
-            self.lbl_stats.configure(
+            self.pane.lbl_stats.configure(
                 text="звук: тишина — проверьте белый/красный тюльпан "
                      "и громкость магнитофона")
             return
-        self.lbl_stats.configure(text="предпросмотр: %.0f кадр/с" %
+        self.pane.lbl_stats.configure(text="предпросмотр: %.0f кадр/с" %
                                  getattr(self, "_fps", 0))
 
     def _check_signal(self):

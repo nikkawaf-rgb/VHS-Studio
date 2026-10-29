@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """VHS Studio — оцифровка VHS через Rombica Pro Studio."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .capture import AudioMonitor, Preview, Recorder          # noqa: E402,F401
 from .commands import (build_filters, codec_args, dshow_args,  # noqa: E402,F401

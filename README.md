@@ -207,11 +207,19 @@ vhs_studio/
 ├── commands.py    сборка аргументов ffmpeg (фильтры, кодеки)
 ├── estimates.py   оценка размера файла
 ├── capture.py     Preview, Recorder, AudioMonitor
-└── ui.py          окно
+├── ui.py          App: состояние, захват, настройки
+└── ui_panels.py   панели интерфейса
+tests/             42 юнит-теста без железа
 ```
 
 Подробнее — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 История версий — в [CHANGELOG.md](CHANGELOG.md).
+
+Проверить, что ничего не сломано:
+
+```bash
+python -m unittest discover -s tests
+```
 
 - `VHS Studio.bat` — запуск без чёрного окна.
 - `settings.json` — последние настройки (создаётся автоматически).
