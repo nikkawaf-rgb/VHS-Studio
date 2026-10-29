@@ -1,0 +1,6 @@
+﻿# нормализация переводов строк
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.jpg binary
