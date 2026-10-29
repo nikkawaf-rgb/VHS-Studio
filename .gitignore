@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- VHS Studio ---
+settings.json
+ffmpeg_last.log
+profiles/*.json
+*.log
