@@ -406,6 +406,8 @@ class App(tk.Tk):
         self.events.put(("preview_gone", msg))
 
     def _preview_gone(self, msg):
+        if self.recorder:
+            return                      # идёт запись — кнопку стопа не трогаем
         if self.preview:
             self.preview.stop()
             self.preview = None
@@ -761,7 +763,8 @@ class App(tk.Tk):
         if now - self._no_signal_since < 8.0:
             return
         if getattr(self, "_auto_reinit_done", False):
-            self.set_status("Нет сигнала. Проверьте кабель и нажмите «⟳ Перезапустить»")
+            self.set_status("Нет кадров. Проверьте кабель, стандарт (PAL/SECAM/NTSC) "
+                            "и нажмите «⟳ Перезапустить»")
             return
         self._auto_reinit_done = True
         self.set_status("Картинки нет — переинициализирую захват…")

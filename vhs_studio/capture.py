@@ -185,9 +185,12 @@ class Preview:
         if not proc:
             return
         rc = proc.wait()
-        if not self.stopping:
-            self.on_error("Захват остановился (ffmpeg код %s). "
-                          "Нажмите «▶ Предпросмотр»." % rc)
+        if self.stopping:
+            return                      # штатная остановка, это не ошибка
+        if rc == 0:
+            return                      # ffmpeg завершился сам, без аварии
+        self.on_error("Захват остановился (ffmpeg код %s). "
+                      "Нажмите «▶ Предпросмотр»." % rc)
 
     def _read_video(self):
         n = self.frame_bytes
@@ -223,7 +226,10 @@ class Preview:
             pass
 
     def stop(self):
-        proc = self.proc
+        # флаг ставим ПЕРВЫМ: иначе поток _watch успевает увидеть смерть
+        # процесса раньше и сообщает «захват остановился» при штатной остановке
+        self.stopping = True
+        proc, self.proc = self.proc, None
         if proc and proc.poll() is None:
             try:
                 proc.stdin.write(b"q")
@@ -237,8 +243,6 @@ class Preview:
                     proc.kill()
                 except Exception:  # noqa: BLE001
                     pass
-        self.stopping = True
-        self.proc = None
 
 
 class Recorder:
