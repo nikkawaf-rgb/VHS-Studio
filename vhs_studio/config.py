@@ -38,6 +38,9 @@ DEFAULTS = {
     "audio_bitrate": 192,
     "audio_gain": 0.0,
     "monitor": True,
+    "auto_stop": True,        # останавливать запись, если долго нет звука и картинки
+    "auto_stop_min": 15,      # через сколько минут тишины останавливать
+    "search": False,          # режим поиска (перемотка): облегчённый предпросмотр
     "out_dir": os.path.join(os.path.expanduser("~"), "Videos", "VHS"),
     "name_template": "{tape}_{date}",
     "tape_name": "кассета",

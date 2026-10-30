@@ -14,6 +14,28 @@ from .commands import build_filters, preview_size, codec_args, audio_args, dshow
 from .config import CREATE_NO_WINDOW, LOG_FILE
 from .device import FFMPEG, FFPLAY
 
+def frame_is_blank(data, threshold=4.0):
+    """Пустой кадр: синий экран, чёрное поле или застывшая картинка.
+
+    Считаем разброс отдельно по каналам R/G/B на прореженной выборке.
+    Синий экран даёт нулевой разброс по всем трём, живая картинка — нет.
+    """
+    if not data:
+        return True
+    step = max(3, (len(data) // 3 // 1500) * 3)      # ~1500 точек на кадр
+    r = data[0::step]
+    g = data[1::step]
+    b = data[2::step]
+    for ch in (r, g, b):
+        if not ch:
+            continue
+        mean = sum(ch) / len(ch)
+        var = sum((v - mean) ** 2 for v in ch) / len(ch)
+        if var ** 0.5 > threshold:
+            return False
+    return True
+
+
 class AudioMonitor:
     """Проигрывает захваченный звук в колонки. Запись при этом всегда идёт в файл."""
 
@@ -151,8 +173,15 @@ class Preview:
 
     def command(self):
         s = self.s
-        vf = build_filters(s, True, self.pw)
         cmd = [FFMPEG, "-hide_banner", "-loglevel", "quiet", "-nostats"]
+        if s.get("search"):
+            # Режим поиска: во время перемотки сигнал рваный, а картинка нужна
+            # «здесь и сейчас». Оставляем только масштаб — без деинтерлейса,
+            # шумодава и резкости, они съедают кадры.
+            vf = "scale=%d:%d:flags=fast_bilinear,setsar=1" % (self.pw, self.ph)
+            cmd += ["-fflags", "nobuffer", "-flags", "low_delay"]
+        else:
+            vf = build_filters(s, True, self.pw)
         cmd += dshow_args(s)
         cmd += ["-map", "0:v"]
         cmd += ["-vf", vf, "-c:v", "rawvideo", "-pix_fmt", "rgb24",

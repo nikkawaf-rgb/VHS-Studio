@@ -157,14 +157,26 @@ class RecordPanel(ttk.LabelFrame):
                         command=app.on_change).grid(row=7, column=0, columnspan=3,
                                                     sticky="w")
 
+        stop_box = ttk.Frame(self)
+        stop_box.grid(row=8, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        self.var_auto_stop = tk.BooleanVar(value=bool(s.get("auto_stop", True)))
+        ttk.Checkbutton(stop_box, text="Останавливать запись, если нет",
+                        variable=self.var_auto_stop,
+                        command=app.on_change).pack(side="left")
+        self.var_auto_stop_min = tk.IntVar(value=int(s.get("auto_stop_min", 15)))
+        ttk.Spinbox(stop_box, from_=1, to=240, width=4,
+                    textvariable=self.var_auto_stop_min,
+                    command=app.on_change).pack(side="left", padx=4)
+        ttk.Label(stop_box, text="мин звука и картинки").pack(side="left")
+
         # предупреждение: кодек не умеет чересстрочность, а обработка выключена
         self.lbl_warn = ttk.Label(self, text="", foreground="#b00020",
                                   wraplength=300, justify="left")
-        self.lbl_warn.grid(row=9, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.lbl_warn.grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         self.lbl_estimate = ttk.Label(self, text="", foreground="#1a5fb4")
         self.lbl_estimate.grid(row=10, column=0, columnspan=3, sticky="w",
-                               pady=(4, 0))
+                               pady=(2, 0))
 
     def collect(self, out):
         meta = CODECS[self.cb_codec.get()]
@@ -311,6 +323,11 @@ class PreviewPane(ttk.Frame):
                    command=app.snapshot).pack(side="left")
         ttk.Button(btns, text="⟳ Сигнал",
                    command=app.reinit_signal).pack(side="left", padx=6)
+        self.var_search = tk.BooleanVar(value=False)
+        self.chk_search = ttk.Checkbutton(btns, text="⏩ Поиск",
+                                          variable=self.var_search,
+                                          command=app.on_search_toggle)
+        self.chk_search.pack(side="left", padx=(0, 6))
 
         btns2 = ttk.Frame(self)
         btns2.pack(fill="x", pady=(4, 0))

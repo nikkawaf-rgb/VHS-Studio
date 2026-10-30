@@ -15,7 +15,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from PIL import Image, ImageTk
 
-from .capture import AudioMonitor, Preview, Recorder
+from .capture import AudioMonitor, Preview, Recorder, frame_is_blank
 from .commands import build_filters, dshow_args, output_ext
 from .config import (CODECS, CODEC_INFO, CRF_RANGE, DEINT_INFO, DEFAULTS,
                      INPUT_PINS, LOG_FILE, PIN_AUTO, PIN_COMPOSITE, PROFILE_DIR,
@@ -44,7 +44,8 @@ class App(tk.Tk):
         self.peak = -70.0
         self.audio_loud = True
         self.audio_last = 0.0
-        self.audio_silent_since = None
+        self._rec_sound_at = 0.0
+        self._rec_pic_at = 0.0
         self._fps = 0.0
         self._fps_frames = 0
         self._fps_t0 = time.time()
@@ -134,6 +135,16 @@ class App(tk.Tk):
         s.update(RECOMMENDED)
         self.apply_settings(s)
         self.set_status("Поставлены рекомендуемые настройки: H.264 CRF 16, bwdif")
+
+    def on_search_toggle(self):
+        """Режим поиска: облегчённый предпросмотр без шумодава и деинтерлейса."""
+        self.s["search"] = bool(self.pane.var_search.get())
+        self.save_settings()
+        if self.preview:
+            self.restart_preview()
+        self.set_status("Режим поиска: " +
+                        ("включён (быстрый предпросмотр)" if self.s["search"]
+                         else "выключен"))
 
     def on_sound_toggle(self):
         """Колонки вкл/выкл. Запись в файл при этом не меняется — звук пишется всегда."""
@@ -254,6 +265,9 @@ class App(tk.Tk):
         s["tape_name"] = self.rec.var_tape.get() or "кассета"
         s["f_bake"] = bool(self.rec.var_bake.get())
         s["record_preview"] = bool(self.rec.var_rprev.get())
+        s["auto_stop"] = bool(self.rec.var_auto_stop.get())
+        s["auto_stop_min"] = int(self.rec.var_auto_stop_min.get())
+        s["search"] = bool(self.pane.var_search.get())
         s["f_deint"] = "" if self.filt.cb_deint.get() == "нет" else self.filt.cb_deint.get()
         for key in ("f_denoise", "f_chroma_dn", "f_sharpen", "f_bright",
                     "f_contrast", "f_saturation", "f_band", "f_side"):
@@ -391,10 +405,12 @@ class App(tk.Tk):
         s["preview_width"] = self._preview_target_width()
         self._preview_w = s["preview_width"]
         self.s = s
+        self._preview_started_at = time.time()
         self.preview = Preview(s, self.push_frame, self.push_level,
                                self.on_preview_error,
                                on_audio=self.monitor.feed)
         if self.preview.start():
+            self._preview_retries = 0
             self.monitor.set_enabled(bool(self.dev.var_audio_on.get()))
             self.pane.btn_prev.configure(text="■  Стоп предпросмотра")
             self.pane.btn_rec.configure(state="normal")
@@ -408,6 +424,17 @@ class App(tk.Tk):
     def _preview_gone(self, msg):
         if self.recorder:
             return                      # идёт запись — кнопку стопа не трогаем
+        # если захват не поднялся с первого раза (чип занят/не отдал поток) —
+        # пробуем ещё до двух раз, прежде чем показать ошибку
+        started = getattr(self, "_preview_started_at", 0)
+        if time.time() - started < 5 and getattr(self, "_preview_retries", 0) < 2:
+            self._preview_retries = getattr(self, "_preview_retries", 0) + 1
+            if self.preview:
+                self.preview.stop()
+                self.preview = None
+            self.set_status("Захват не поднялся, повторяю попытку…")
+            self.after(1500, self.start_preview)
+            return
         if self.preview:
             self.preview.stop()
             self.preview = None
@@ -419,6 +446,7 @@ class App(tk.Tk):
         self.set_status(msg)
 
     def stop_preview(self):
+        self._preview_retries = 0
         if self.preview:
             self.preview.stop()
             self.preview = None
@@ -438,6 +466,10 @@ class App(tk.Tk):
             self.after(120, self.start_preview)
 
     def push_frame(self, data, w, h):
+        if self.recorder:
+            # кадр считается «живым», только если он не пустой
+            if not frame_is_blank(data):
+                self._rec_pic_at = time.time()
         if self.frame_q.full():
             try:
                 self.frame_q.get_nowait()
@@ -452,6 +484,8 @@ class App(tk.Tk):
         self.peak = max(self.peak - 0.4, pk)
         self.audio_last = time.time()
         self.audio_loud = rms > 40.0
+        if self.audio_loud and self.recorder:
+            self._rec_sound_at = time.time()
 
     # ---------------- запись ----------------
     def toggle_record(self):
@@ -478,6 +512,9 @@ class App(tk.Tk):
                                  lambda ok, info: self.on_rec_done(ok, info, path),
                                  self.push_level, self.monitor.feed)
         if self.recorder.start():
+            now = time.time()
+            self._rec_sound_at = now
+            self._rec_pic_at = now
             self.monitor.set_enabled(bool(self.dev.var_audio_on.get()))
             self.pane.btn_rec.configure(text="■  Стоп записи", state="normal")
             self.pane.btn_prev.configure(state="disabled")
@@ -654,6 +691,8 @@ class App(tk.Tk):
         self.rec.var_tape.set(self.s["tape_name"])
         self.rec.var_bake.set(self.s["f_bake"])
         self.rec.var_rprev.set(self.s["record_preview"])
+        self.rec.var_auto_stop.set(bool(self.s.get("auto_stop", True)))
+        self.rec.var_auto_stop_min.set(int(self.s.get("auto_stop_min", 15)))
         self.filt.cb_deint.set(self.s["f_deint"] or "нет")
         for key in ("f_denoise", "f_chroma_dn", "f_sharpen", "f_bright",
                     "f_contrast", "f_saturation", "f_band", "f_side"):
@@ -709,7 +748,14 @@ class App(tk.Tk):
             self._fps = self._fps_frames / dt if dt > 0 else 0
             self._fps_t0 = now_t
             self._fps_frames = 0
-        self._update_audio_hint()
+            if self.preview and not self.recorder:
+                self.pane.lbl_stats.configure(text="предпросмотр: %.0f кадр/с" % self._fps)
+                idle = now_t - self._last_frame_at if self._last_frame_at else 0
+                if idle > 2.5:
+                    self.set_status(
+                        "Нет кадров %.0f с — вероятно, идёт перемотка. "
+                        "Остановите её, картинка вернётся." % idle)
+        self._check_auto_stop(now_t)
         self._tick_n = getattr(self, "_tick_n", 0) + 1
         if self._tick_n % 250 == 0:          # раз в 10 секунд обновляем место на диске
             try:
@@ -718,30 +764,27 @@ class App(tk.Tk):
                 pass
         self._tick_job = self.after(12, self._tick)
 
-    def _update_audio_hint(self):
-        """Пишет про тишину только если её действительно нет несколько секунд,
-        и убирает надпись, как только звук появился."""
-        if self.recorder:
-            return                      # во время записи тут счётчик, не трогаем
-        if not self.preview:
-            self.audio_silent_since = None
-            self.pane.lbl_stats.configure(text="")
+    def _check_auto_stop(self, now):
+        """Останавливает запись, если долго нет ни звука, ни картинки.
+
+        Именно «и», а не «или»: на повреждённых участках кассеты картинка
+        пропадает, но звук остаётся — такую запись обрывать нельзя.
+        """
+        if not self.recorder:
             return
-        now = time.time()
-        if getattr(self, "audio_loud", True):
-            self.audio_silent_since = None
-            self.pane.lbl_stats.configure(text="предпросмотр: %.0f кадр/с" %
-                                     getattr(self, "_fps", 0))
+        minutes = int(getattr(self.rec, "var_auto_stop_min").get())
+        if not self.rec.var_auto_stop.get():
+            self._auto_stop_said = False
             return
-        if self.audio_silent_since is None:
-            self.audio_silent_since = now
-        if now - self.audio_silent_since > 4.0:
-            self.pane.lbl_stats.configure(
-                text="звук: тишина — проверьте белый/красный тюльпан "
-                     "и громкость магнитофона")
+        last = max(self._rec_sound_at, self._rec_pic_at)
+        idle = now - last
+        if idle < 60:
+            self._auto_stop_said = False
             return
-        self.pane.lbl_stats.configure(text="предпросмотр: %.0f кадр/с" %
-                                 getattr(self, "_fps", 0))
+        if idle >= minutes * 60:
+            self.set_status("Автостоп: %d мин без звука и картинки — запись остановлена"
+                            % minutes)
+            self._stop_recording()
 
     def _check_signal(self):
         """Если кадров нет совсем долго — один раз пробуем переинициализировать чип.
@@ -751,6 +794,10 @@ class App(tk.Tk):
         перезапуски.
         """
         if not self.preview or self.recorder:
+            self._no_signal_since = None
+            return
+        if self.s.get("search"):
+            # в режиме поиска кадров может не быть из-за перемотки — это нормально
             self._no_signal_since = None
             return
         now = time.time()

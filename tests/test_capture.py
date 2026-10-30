@@ -4,7 +4,7 @@ import os
 import time
 import unittest
 
-from vhs_studio.capture import AudioMonitor, Preview
+from vhs_studio.capture import AudioMonitor, Preview, frame_is_blank
 from vhs_studio.config import DEFAULTS
 from vhs_studio.device import FFMPEG, FFPLAY
 
@@ -73,6 +73,31 @@ class PreviewGeometryTest(unittest.TestCase):
         for n, w, h in sizes:
             self.assertEqual(n, p.pw * p.ph * 3)
             self.assertEqual((w, h), (p.pw, p.ph))
+
+
+class BlankFrameTest(unittest.TestCase):
+    def test_blue_screen_is_blank(self):
+        frame = bytes([0, 0, 255]) * (640 * 480)
+        self.assertTrue(frame_is_blank(frame))
+
+    def test_black_frame_is_blank(self):
+        self.assertTrue(frame_is_blank(bytes(640 * 480 * 3)))
+
+    def test_picture_is_not_blank(self):
+        import random
+        random.seed(1)
+        frame = bytes(random.randrange(256) for _ in range(640 * 480 * 3))
+        self.assertFalse(frame_is_blank(frame))
+
+    def test_gradient_is_not_blank(self):
+        data = bytearray()
+        for i in range(640 * 480):
+            v = i % 256
+            data += bytes((v, v, v))
+        self.assertFalse(frame_is_blank(bytes(data)))
+
+    def test_empty(self):
+        self.assertTrue(frame_is_blank(b""))
 
 
 class AudioMonitorTest(unittest.TestCase):
